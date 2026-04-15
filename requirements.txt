@@ -1,0 +1,27 @@
+# Web / scraping
+httpx==0.27.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+
+# Domain enrichment
+python-whois==0.9.4
+
+# RAG — retrieval
+rank-bm25==0.2.2
+chromadb==0.5.3
+
+# RAG — embeddings + LLM
+openai==1.35.0
+anthropic==0.29.0
+
+# Output schema
+pydantic==2.7.4
+
+# UI
+gradio==4.37.2
+
+# Eval
+pandas==2.2.2
+
+# Utilities
+python-dotenv==1.0.1

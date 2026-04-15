@@ -1,0 +1,24 @@
+# Raw scrape dumps — can be large and may contain PII
+scrapers/raw/*
+!scrapers/raw/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+
+# Environment
+.env
+.env.local
+
+# ChromaDB persistence
+chroma_db/
+
+# Eval outputs (intermediate)
+eval/results_*.csv
+
+# macOS
+.DS_Store

@@ -1,8 +1,8 @@
-# Taiwan Fraud Detector 台灣詐騙網址偵測器
+# Taiwan Fraud Detector 台灣詐騙訊息偵測器
 
-> A RAG-based web application that analyzes URLs shared via LINE to detect fraud targeting elderly users in Taiwan.
+> A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** In progress — design phase complete, implementation starting  
+**Status:** In progress — design v0.2 complete, implementation starting  
 **Demo:** *(coming soon — Hugging Face Spaces)*  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
@@ -10,40 +10,56 @@
 
 ## What it does
 
-Users paste a URL they received in a LINE message. The app:
+Elderly users in Taiwan receive fraudulent LINE messages but often cannot copy just the URL. Instead, they can **forward the whole message** — the same way they'd share it to a friend. The app accepts the full message text and:
 
-1. Fetches and analyzes the page content
-2. Retrieves the most relevant Taiwan scam patterns from a knowledge base
-3. Asks an LLM to reason about the evidence
-4. Returns a verdict (fraud / suspicious / safe), confidence score, and a plain-language summary in Traditional Chinese
+1. Analyzes the message wording for fraud signals (urgency, impersonation, bait language)
+2. Extracts any URLs from the message (if present)
+3. Fetches and analyzes the linked page content (URL branch only)
+4. Retrieves the most relevant Taiwan scam patterns from a knowledge base
+5. Asks an LLM to reason over all evidence
+6. Returns a verdict (fraud / suspicious / safe), confidence score, and a plain-language summary in Traditional Chinese
+
+**Works with or without a URL.** Text-only fraud messages (gift card requests, impersonation scripts, urgency bait) are analyzed on message wording alone.
 
 ## Architecture overview
 
 ```
-URL input
+Full LINE message (text)
     │
     ▼
-Security layer (SSRF block, sanitize, unshorten)
-    │
-    ├─── Web scraper (httpx + BeautifulSoup)
-    └─── Domain enricher (WHOIS age, registrar, typosquat)  ← parallel
+Message sanitizer (prompt injection defense)
     │
     ▼
-Hybrid RAG retriever
-    ├─── BM25 keyword search (rank_bm25)
-    └─── Semantic search (ChromaDB + OpenAI embeddings)
+Message signal analyzer (urgency / impersonation / bait keywords)
     │
     ▼
-Knowledge base (Taiwan/LINE scam patterns — markdown)
+URL extractor
     │
-    ▼
-Prompt builder → LLM (Claude Sonnet)
-    │
-    ▼
-Structured output (Pydantic-validated JSON)
-    │
-    ▼
-Gradio web UI
+    ├── URL found ──────────────────────────────────────────────────┐
+    │                                                               │
+    │   URL validator + unshortener (SSRF block, resolve lin.ee)   │
+    │       │                                                       │
+    │       ├─── Web scraper (httpx + BeautifulSoup)  ← parallel   │
+    │       └─── Domain enricher (WHOIS, typosquat)   ← parallel   │
+    │                                                               │
+    └── No URL ──────────────────────────────────────────────────┐  │
+                                                                 ▼  ▼
+                                                    Hybrid RAG retriever
+                                                    (query = message text [+ page content if URL])
+                                                        ├─── BM25 keyword search
+                                                        └─── Semantic search (ChromaDB)
+                                                                 │
+                                                                 ▼
+                                                    Knowledge base (Taiwan/LINE scam patterns)
+                                                                 │
+                                                                 ▼
+                                                    Prompt builder → LLM (Claude Sonnet 4.6)
+                                                                 │
+                                                                 ▼
+                                                    Structured output (Pydantic-validated JSON)
+                                                                 │
+                                                                 ▼
+                                                          Gradio web UI
 ```
 
 ## Tech stack
@@ -76,28 +92,38 @@ Four defense layers protect the app from SSRF, prompt injection, and resource ex
 
 ## Evaluation
 
-Accuracy measured against a labeled test set of ~80 Taiwan fraud and legitimate URLs. Results documented in [`eval/results.csv`](./eval/) as the project develops.
+Precision and recall measured against a labeled test set of ~100 real Taiwan fraud LINE messages. Recall is the primary optimization target — missing a fraud causes real harm; false alarms are merely annoying.
+
+Results documented in [`eval/results.csv`](./eval/) as the project develops.
 
 ## Project structure
 
 ```
 taiwan-fraud-detector/
 ├── README.md
-├── DESIGN.md              # Living system design document
-├── app.py                 # Gradio app entry point
+├── DESIGN.md                  # Living system design document
+├── app.py                     # Gradio app entry point
 ├── pipeline/
-│   ├── validator.py       # URL validation + SSRF defense
-│   ├── scraper.py         # Web scraper (subprocess isolated)
-│   ├── enricher.py        # Domain enricher (WHOIS)
-│   ├── sanitizer.py       # Content sanitizer
-│   ├── retriever.py       # Hybrid BM25 + semantic search
-│   ├── prompt_builder.py  # Augmented prompt assembly
-│   └── output.py          # Pydantic schema + formatter
-├── knowledge_base/        # Taiwan scam pattern markdown files
+│   ├── extractor.py           # URL extraction from message text
+│   ├── validator.py           # URL validation + SSRF defense
+│   ├── scraper.py             # Web scraper (subprocess isolated)
+│   ├── enricher.py            # Domain enricher (WHOIS)
+│   ├── sanitizer.py           # Content sanitizer (page + message)
+│   ├── retriever.py           # Hybrid BM25 + semantic search
+│   ├── prompt_builder.py      # Augmented prompt assembly
+│   └── output.py              # Pydantic schema + formatter
+├── knowledge_base/            # Taiwan scam pattern markdown files
+├── scrapers/
+│   ├── scrape_165.py          # Scrape 165.npa.gov.tw fraud cases
+│   ├── scrape_ptt.py          # Scrape PTT community fraud posts
+│   ├── scrape_news.py         # Scrape CNA/UDN fraud news articles
+│   ├── scrape_twcert.py       # Scrape TWCERT phishing alerts
+│   ├── build_kb.py            # Convert reviewed scrapes → KB markdown
+│   └── raw/                   # Raw scrape dumps (git-ignored)
 ├── eval/
-│   ├── eval.py            # Evaluation harness
-│   ├── labeled_urls.csv   # Ground truth test set
-│   └── results.csv        # Eval results by prompt version
+│   ├── eval.py                # Evaluation harness
+│   ├── labeled_messages.csv   # Ground truth test set (full LINE messages)
+│   └── results.csv            # Eval results by prompt version
 └── requirements.txt
 ```
 
@@ -118,4 +144,4 @@ This project is built as a practical AI engineering portfolio piece while comple
 
 ---
 
-*Data sources for knowledge base: [165反詐騙諮詢專線](https://165.npa.gov.tw/), Criminal Investigation Bureau annual fraud statistics.*
+*Data sources: [165反詐騙諮詢專線](https://165.npa.gov.tw/), [TWCERT/CC](https://www.twcert.org.tw/), PTT community posts, CNA/UDN news articles quoting fraud messages, Criminal Investigation Bureau annual statistics.*
