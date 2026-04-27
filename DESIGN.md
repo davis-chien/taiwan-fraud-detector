@@ -2,7 +2,7 @@
 
 System Design Document
 
-Status: Draft — v0.2
+Status: Draft — v0.2 (Phase 1 local MVP implemented)
 
 Last updated: Wed Apr 15 2026
 
@@ -43,12 +43,125 @@ This app accepts the full LINE message text (containing a URL and surrounding wo
 | ✓ Eval harness with precision/recall on labeled messages | |
 | ✓ Deployed on Hugging Face Spaces (free) | |
 
+**Implementation phases**
+
+These phases keep the full RAG design in the roadmap while allowing an MVP to ship earlier.
+
+- **Phase 1 — Minimal safe MVP**
+  - Implement full LINE message input and text-only fraud signal analysis.
+  - Add URL extraction and basic validation (scheme + private IP / metadata block).
+  - Provide a simple Gradio UI with verdict, confidence, and summary.
+  - Keep the knowledge base and retrieval design documented, but do not require them for the first working prototype.
+
+- **Phase 2 — Safe URL branch and heuristics**
+  - Add URL unshortening and URL-origin signals without full page scraping.
+  - Add URL-based heuristics and reputation-style checks (e.g. suspicious domain patterns, known bad TLDs, red-flag keywords in the raw URL or message).
+  - Log link metadata and use it as part of the verdict, while keeping actual page fetch logic isolated.
+  - Keep KB and retrieval logic as planned but deprioritized until Phase 3.
+
+- **Phase 3 — RAG retrieval and KB integration**
+  - Populate a small seed `knowledge_base/` with initial scam pattern markdown files.
+  - Implement BM25 and semantic retrieval modules from the KB.
+  - Wire retrieved patterns into prompt assembly and use them as supporting evidence for the LLM verdict.
+  - Add optional page content ingestion only if URL fetcher is hardened and isolated.
+
+- **Phase 4 — Production hardening and isolation**
+  - Move production hosting off the developer laptop into a cloud container or VM.
+  - Run URL fetch/unshorten/scraping in a separate isolated process, container, or worker.
+  - Add stronger network controls, egress policy, and safe fallback behavior for malicious or failed URLs.
+  - Keep the full design and KB/retrieval architecture intact, but ensure the system is hardened before public exposure.
+
+**Note:** The KB and retrieval architecture remain part of the long-term design, but they are not blockers for Phase 1. This lets the project ship a safe MVP first and grow toward the full RAG-enabled system.
+
+### Phase 1 — Module boundaries and data flow
+
+The first phase is intentionally narrow and focused on safe core functionality. It uses a small set of orthogonal modules so the flow is easy to implement and validate.
+
+**Module boundaries**
+
+- `app.py`
+  - Orchestrates Phase 1 processing.
+  - Accepts raw LINE message text from the UI.
+  - Calls pipeline modules in order and renders the verdict.
+- `pipeline/sanitizer.py`
+  - Cleans raw message text.
+  - Removes control characters, extra whitespace, and prompt-injection patterns.
+  - Preserves readable zh-TW text for downstream analysis.
+- `pipeline/extractor.py`
+  - Extracts a candidate URL from free-form message text.
+  - Normalizes common URL forms and prepares them for validation.
+- `pipeline/validator.py`
+  - Checks URL scheme and host information.
+  - Blocks private/internal IP ranges, localhost, and cloud metadata addresses.
+  - Rejects malformed or unsupported URLs without making any network calls.
+- `pipeline/signal_analyzer.py`
+  - Extracts fraud-related signals from the sanitized message text.
+  - Uses rule-based keyword patterns for urgency, impersonation, prize/gift bait, and threats.
+
+**Phase 1 data flow**
+
+1. Raw LINE message text is entered in the UI.
+2. `app.py` calls `sanitize_message()`.
+3. The sanitized text is passed to `extract_url()`.
+4. If a URL is found, `validate_url()` verifies it before any network activity.
+5. `analyze_message_signals()` inspects the text for fraud signals.
+6. `app.py` combines the results into a simple verdict, confidence score, and plain Chinese summary.
+
+**Future modules (kept for later phases)**
+
+- `pipeline/retriever.py`
+- `pipeline/prompt_builder.py`
+- `pipeline/output.py`
+- `pipeline/scraper.py`
+- `pipeline/enricher.py`
+
+These remain part of the Phase 2+ roadmap but are not required for Phase 1.
+
+### Phase 1 — Implementation steps
+
+1. Define the minimum module boundaries and data flow for Phase 1.
+2. Implement basic message sanitizer:
+   - remove control characters, extra whitespace, and malicious prompt injection patterns
+   - preserve readable Chinese text for analysis and summary
+3. Implement URL extraction:
+   - detect `http://`, `https://`, and common bare/broken URL forms
+   - normalize extracted URLs for validation
+4. Implement URL validation:
+   - block non-HTTP(S) schemes
+   - block private IP ranges, localhost, and cloud metadata addresses
+   - reject unsupported or malformed URLs before any network call
+5. Implement text-only fraud signal analysis:
+   - urgency, impersonation, prize/gift, threat keywords
+   - simple rule-based signal collection for short LINE messages
+6. Build a minimal Gradio UI in `app.py`:
+   - one text input for the full LINE message
+   - a submit button
+   - verdict, confidence, and plain Chinese summary output
+7. Add local tests and sample cases:
+   - example safe and scam messages
+   - cases with malformed or malicious URLs
+   - verify the app returns safe responses without making network calls on invalid URLs
+
+### Phase 1 progress tracker
+
+- [x] Define Phase 1 module scope and interfaces
+- [x] Implement `pipeline/sanitizer.py`
+- [x] Implement `pipeline/extractor.py`
+- [x] Implement `pipeline/validator.py`
+- [x] Implement `pipeline/signal_analyzer.py` (or equivalent)
+- [x] Implement `app.py` with Gradio UI
+- [x] Add local test examples and run manual validation
+- [x] Confirm Phase 1 end-to-end flow works locally
+
 **Constraints**
 
 - Expected users: <10 concurrent, MVP phase
 - Knowledge base: semi-automated scraping from public sources, refreshed manually
 - Deployment: Hugging Face Spaces (free tier), no dedicated infra
 - Budget: minimal — free-tier APIs and open-source libraries where possible
+
+**Deployment note:**
+- The production service should not run on a personal laptop if it will fetch untrusted URLs. Use a separate cloud-hosted or isolated environment for the app and URL fetcher so any malicious payload is contained away from your local machine.
 
 ---
 
@@ -140,9 +253,20 @@ The app now has two attack surfaces: (1) raw text pasted by users (prompt inject
 | **Layer 2** | Redirect abuse, timeout/hang, oversized responses | httpx in subprocess. 5s connect timeout, 10s read timeout, 2MB response cap, max 3 redirects. Subprocess hard-killed by OS after 15s. | ~0ms overhead |
 | **Layer 3** | Prompt injection via hidden HTML content | Strip all tags, extract visible text only via BeautifulSoup. Cap at 3000 tokens. Hidden comments and invisible divs never reach the LLM. | ~0ms |
 | **Layer 4** | Redirect to private IP after DNS resolution | Resolve hostname to IP before fetching. Re-check resolved IP against private ranges (DNS rebinding defense). | ~50ms |
-| **Layer 5 (v2)** | Scraper crash affects main app | Run scraper in dedicated Docker container per request. Adds 2–5s cold start. Deferred — subprocess isolation sufficient for MVP scale. | 2–5s |
+| **Layer 5 (v2)** | Scraper crash affects main app | Run scraper in dedicated Docker container or isolated cloud worker per request. Adds 2–5s cold start. Deferred — subprocess isolation sufficient for MVP scale. Production should use a hardened separate service, not a personal laptop. | 2–5s |
 
 ---
+
+**4.1 Deployment and URL-fetch isolation**
+
+For this app, untrusted URL fetching is the highest-risk operation. The design therefore recommends a split architecture:
+
+- Host the public-facing app and message parser in one service.
+- Host the URL unshortener / fetcher / scraper in a separate isolated environment, ideally a cloud VM, container, or serverless worker.
+- Keep the production fetcher separate from any sensitive developer workstation and limit its network egress to HTTP/HTTPS only.
+- If a URL is deemed high-risk by heuristics or reputation checks, avoid fetching it entirely and still return a conservative verdict.
+
+This approach minimizes the risk that a malicious URL can directly attack your local laptop or the main application environment.
 
 **5. Knowledge base**
 

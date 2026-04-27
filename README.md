@@ -2,8 +2,8 @@
 
 > A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** In progress — design v0.2 complete, implementation starting  
-**Demo:** *(coming soon — Hugging Face Spaces)*  
+**Status:** Phase 1 local MVP complete — safe LINE message analysis, URL extraction, validation, and a Gradio UI are implemented.  
+**Demo:** Run locally with `python3 app.py` and open `http://127.0.0.1:7860`  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
 ---
