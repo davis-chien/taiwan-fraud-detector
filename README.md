@@ -2,7 +2,7 @@
 
 > A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** Phase 1 local MVP complete — safe LINE message analysis, URL extraction, validation, and a Gradio UI are implemented.  
+**Status:** Phase 1 local MVP complete — safe LINE message analysis, URL extraction, validation, and a Gradio UI are implemented. Phase 2 safe URL branch features are also implemented, including URL unshortening, URL-origin signal heuristics, and safe URL metadata logging.  
 **Demo:** Run locally with `python3 app.py` and open `http://127.0.0.1:7860`  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
@@ -94,6 +94,8 @@ Four defense layers protect the app from SSRF, prompt injection, and resource ex
 
 Precision and recall measured against a labeled test set of ~100 real Taiwan fraud LINE messages. Recall is the primary optimization target — missing a fraud causes real harm; false alarms are merely annoying.
 
+Local test coverage is organized by component, with dedicated files for each pipeline module and end-to-end app integration. See `tests/test_sanitizer.py`, `tests/test_extractor.py`, `tests/test_validator.py`, `tests/test_signal_analyzer.py`, `tests/test_unshortener.py`, `tests/test_url_signals.py`, `tests/test_url_metadata.py`, and `tests/test_app.py`.
+
 Results documented in [`eval/results.csv`](./eval/) as the project develops.
 
 ## Project structure
@@ -112,6 +114,15 @@ taiwan-fraud-detector/
 │   ├── retriever.py           # Hybrid BM25 + semantic search
 │   ├── prompt_builder.py      # Augmented prompt assembly
 │   └── output.py              # Pydantic schema + formatter
+├── tests/
+│   ├── test_app.py            # App integration coverage
+│   ├── test_extractor.py      # URL extraction tests
+│   ├── test_sanitizer.py      # Message sanitization tests
+│   ├── test_signal_analyzer.py# Fraud signal detection tests
+│   ├── test_unshortener.py    # URL unshortening tests
+│   ├── test_url_metadata.py   # URL metadata extraction tests
+│   ├── test_url_signals.py    # URL-origin heuristics tests
+│   └── test_validator.py      # URL validation tests
 ├── knowledge_base/            # Taiwan scam pattern markdown files
 ├── scrapers/
 │   ├── scrape_165.py          # Scrape 165.npa.gov.tw fraud cases

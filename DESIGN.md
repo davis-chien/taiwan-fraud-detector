@@ -153,6 +153,42 @@ These remain part of the Phase 2+ roadmap but are not required for Phase 1.
 - [x] Add local test examples and run manual validation
 - [x] Confirm Phase 1 end-to-end flow works locally
 
+### Phase 2 — Implementation steps
+
+1. Add URL branch heuristics without making unsafe live page fetches by default.
+   - Implement URL unshortening for common redirect services such as `lin.ee`, `bit.ly`, and `tinyurl.com`.
+   - Resolve redirects safely using a hardened HTTP client with strict timeouts, max redirects, and response size limits.
+2. Extend URL-based analysis signals.
+   - Detect suspicious domain patterns, known bad TLDs, IDN homograph lookalikes, and credential leaks in raw URLs.
+   - Add reputation-style heuristics for URLs and domains, such as expired domains, newly created domains, and mismatched brand keywords.
+3. Add safe URL metadata logging.
+   - Capture URL origin metadata such as normalized domain, final destination, redirect chain length, and whether the URL contains credentials.
+   - Keep this metadata isolated from any page scraping logic and ensure it is only used for verdict signals.
+4. Integrate URL signals into the verdict.
+   - Combine message signals and URL-origin signals into a richer verdict explanation.
+   - Ensure the UI still returns a safe plain-language summary and confidence score.
+5. Add Phase 2 local tests.
+   - Create unit tests for URL unshortening, redirect handling, and URL-origin heuristics.
+   - Add integration tests for the URL branch with both benign and suspicious redirect chains.
+   - Keep Phase 2 coverage in a dedicated module at `tests/test_phase2.py`.
+6. Update documentation and roadmap tracking.
+   - Document Phase 2 progress in `DESIGN.md` and `README.md`.
+   - Keep the KB and full RAG retrieval design in the roadmap but deprioritize until Phase 3.
+
+**Phase 2 status:**
+- Phase 2 URL branch features are implemented in the current codebase.
+- Completed work includes safe shortener resolution, suspicious URL heuristics, metadata extraction, verdict integration, and dedicated Phase 2 tests.
+
+### Phase 2 progress tracker
+
+- [x] Design URL branch heuristics and safe unshortening flow
+- [x] Implement URL unshortening and redirect chain analysis
+- [x] Add URL-origin signal detection and reputation heuristics
+- [x] Log URL metadata safely for verdict reasoning
+- [x] Integrate URL signals into the Phase 1 verdict pipeline
+- [x] Add local tests for URL branch behavior
+- [x] Update docs and roadmap to reflect Phase 2 status
+
 **Constraints**
 
 - Expected users: <10 concurrent, MVP phase
