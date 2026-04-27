@@ -20,6 +20,8 @@ CONTROL_CHARACTERS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028\u2029]+")
 WHITESPACE_RE = re.compile(r"\s+")
 PROMPT_INJECTION_RE = re.compile("|".join(PROMPT_INJECTION_PATTERNS), re.IGNORECASE)
 
+MAX_PAGE_CHARS = 12_000  # ~3 000 tokens at 4 chars/token
+
 
 def sanitize_message(raw_message: str) -> str:
     """Clean a raw LINE message before analysis.
@@ -34,6 +36,25 @@ def sanitize_message(raw_message: str) -> str:
     text = CONTROL_CHARACTERS_RE.sub(" ", text)
     text = PROMPT_INJECTION_RE.sub("", text)
     text = WHITESPACE_RE.sub(" ", text).strip()
+
+    return text
+
+
+def sanitize_page_content(text: str) -> str:
+    """Strip prompt-injection patterns and cap page text at ~3 000 tokens.
+
+    The scraper already converts HTML to plain text; this function applies the
+    same injection filter used for message input and enforces the token budget.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+
+    text = CONTROL_CHARACTERS_RE.sub(" ", text)
+    text = PROMPT_INJECTION_RE.sub("", text)
+    text = WHITESPACE_RE.sub(" ", text).strip()
+
+    if len(text) > MAX_PAGE_CHARS:
+        text = text[:MAX_PAGE_CHARS].rstrip() + "..."
 
     return text
 

@@ -11,14 +11,15 @@ rank-bm25==0.2.2
 chromadb==0.5.3
 
 # RAG — embeddings + LLM
-openai==1.35.0
+voyageai==0.3.7
 anthropic==0.29.0
 
 # Output schema
 pydantic==2.7.4
 
 # UI
-gradio==4.37.2
+gradio==4.44.1
+huggingface_hub==0.23.4   # gradio 4.x requires HfFolder, removed in hf_hub>=1.0
 
 # Eval
 pandas==2.2.2

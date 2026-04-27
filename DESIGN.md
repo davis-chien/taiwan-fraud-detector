@@ -2,9 +2,9 @@
 
 System Design Document
 
-Status: Draft — v0.2 (Phase 1 local MVP implemented)
+Status: v0.4 — Phase 3 complete (RAG + KB + security hardening)
 
-Last updated: Wed Apr 15 2026
+Last updated: Mon Apr 27 2026
 
 ---
 
@@ -107,15 +107,16 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 5. `analyze_message_signals()` inspects the text for fraud signals.
 6. `app.py` combines the results into a simple verdict, confidence score, and plain Chinese summary.
 
-**Future modules (kept for later phases)**
+**All pipeline modules are now implemented** (Phase 2–3):
 
-- `pipeline/retriever.py`
-- `pipeline/prompt_builder.py`
-- `pipeline/output.py`
-- `pipeline/scraper.py`
-- `pipeline/enricher.py`
-
-These remain part of the Phase 2+ roadmap but are not required for Phase 1.
+- `pipeline/retriever.py` — BM25 + semantic hybrid search, KB loader
+- `pipeline/prompt_builder.py` — assembles message signals + URL metadata + KB evidence
+- `pipeline/output.py` — Pydantic v2 `FraudVerdict` schema
+- `pipeline/scraper.py` — subprocess-isolated page fetcher
+- `pipeline/enricher.py` — WHOIS with 24 h in-memory cache
+- `pipeline/unshortener.py` — shortener resolver with per-hop SSRF check
+- `pipeline/url_metadata.py` — URL metadata extraction
+- `pipeline/llm.py` — Claude Sonnet 4.6 via forced tool use
 
 ### Phase 1 — Implementation steps
 
@@ -189,6 +190,40 @@ These remain part of the Phase 2+ roadmap but are not required for Phase 1.
 - [x] Add local tests for URL branch behavior
 - [x] Update docs and roadmap to reflect Phase 2 status
 
+### Phase 3 — Implementation steps
+
+1. Seed the knowledge base.
+   - Collect a small set of reviewed scam pattern documents in `knowledge_base/`.
+   - Format each file as Markdown with a clear title, category, and example scam language.
+2. Implement hybrid retrieval.
+   - Add BM25 keyword search over the KB text.
+   - Add semantic embeddings search for higher-level similarity.
+   - Keep retrieval code isolated in `pipeline/retriever.py`.
+3. Build prompt assembly.
+   - Create `pipeline/prompt_builder.py` to combine system instructions, message signals, URL metadata, and retrieved KB evidence.
+   - Use safe prompt templates and guardrails for structured output.
+   - Wire the assembled prompt into the app flow so it can be inspected and used for future LLM inference.
+4. Integrate the KB into the verdict flow.
+   - Use retrieved KB patterns as supporting evidence for the LLM decision.
+   - Ensure the LLM can still return the simple zh-TW summary and verdict schema.
+5. Add optional content ingestion carefully.
+   - Only add page content retrieval after URL fetching is hardened and isolated.
+   - Keep the Page fetcher separate from the core app flow until production isolation is in place.
+6. Add Phase 3 validation.
+   - Write tests for KB retrieval, prompt assembly, and evidence-aware verdicts.
+   - Add evaluation cases that exercise retrieved KB pattern matching.
+
+### Phase 3 progress tracker
+
+- [x] Seed initial knowledge base with Taiwan scam pattern documents
+- [x] Implement BM25 retrieval over the KB
+- [x] Implement semantic search over the KB
+- [x] Add prompt builder to assemble signals and KB evidence
+- [x] Wire prompt builder output into the app flow for inspection
+- [x] Integrate retrieved KB evidence into the verdict flow
+- [x] Add optional page content ingestion path under isolation
+- [x] Add Phase 3 tests and evaluation cases
+
 **Constraints**
 
 - Expected users: <10 concurrent, MVP phase
@@ -213,7 +248,7 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 | **URL extractor** | Parse URLs from free-form message text | Python regex + urllib | **v1** |
 | **Message signal analyzer** | Extract urgency, impersonation, gift/threat keywords | regex + zh-TW keyword lists | **v1** |
 | **URL validator** | Block SSRF, private IPs, bad schemes | Python stdlib + ipaddress | **v1** |
-| **URL unshortener** | Resolve bit.ly / lin.ee redirects | httpx follow-redirects | **v1** |
+| **URL unshortener** | Resolve bit.ly / lin.ee redirects; per-hop SSRF check blocks redirect-to-private-IP | httpx manual redirect loop + ipaddress | **v1** |
 | **Web scraper** | Fetch page text, title, meta tags | httpx + BeautifulSoup | **v1** |
 | **Domain enricher** | WHOIS age, registrar country, typosquat | python-whois + string analysis | **v1** |
 | **Content sanitizer** | Strip HTML, cap tokens, block prompt inject from page | BeautifulSoup + regex | **v1** |
@@ -246,9 +281,9 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 7. These two run in parallel via `ThreadPoolExecutor`:
    - **Web scraper** fetches page (5s connect timeout, 10s read, 2MB cap, subprocess isolated)
    - **Domain enricher** runs WHOIS lookup + domain age + typosquat analysis (cached 24h)
-8. **Content sanitizer** strips HTML to visible text only. Caps at 3000 tokens.
+8. **Content sanitizer** strips HTML to visible text only. Caps at 12,000 characters.
 9. **RAG retriever** runs hybrid search using BOTH message text and page content as query. Returns top-3 KB pattern documents.
-10. **Prompt builder** assembles: system prompt + message signals + WHOIS data + page content + retrieved KB patterns
+10. **Prompt builder** assembles: message signals + URL metadata + WHOIS data + page content + retrieved KB patterns (system instructions live in `llm.py` as the API `system` parameter)
 
 **Branch B — No URL found:**
 
@@ -258,7 +293,7 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 
 **Both branches continue:**
 
-11. **LLM** produces structured JSON output (enforced via JSON mode / tool use)
+11. **LLM** produces structured output enforced via `tool_choice={"type":"tool","name":"submit_verdict"}` (forced tool use — Claude never returns free text)
 12. **Output formatter** validates schema with Pydantic, renders verdict card + plain summary in Gradio
 
 **3.3 Output schema**
@@ -286,8 +321,8 @@ The app now has two attack surfaces: (1) raw text pasted by users (prompt inject
 |---|---|---|---|
 | **Layer 0** | Prompt injection from pasted message | Strip/escape control characters and LLM instruction patterns from raw message input before processing | ~0ms |
 | **Layer 1** | SSRF — private IP / internal endpoint access | Block private IP ranges (10.x, 192.168.x, 172.16.x, 127.x), localhost, AWS/GCP metadata endpoints (169.254.169.254), non-http schemes | ~0ms |
-| **Layer 2** | Redirect abuse, timeout/hang, oversized responses | httpx in subprocess. 5s connect timeout, 10s read timeout, 2MB response cap, max 3 redirects. Subprocess hard-killed by OS after 15s. | ~0ms overhead |
-| **Layer 3** | Prompt injection via hidden HTML content | Strip all tags, extract visible text only via BeautifulSoup. Cap at 3000 tokens. Hidden comments and invisible divs never reach the LLM. | ~0ms |
+| **Layer 2** | Redirect abuse, timeout/hang, oversized responses | httpx in subprocess. 5s connect timeout, 10s read timeout, 2MB response cap, max 3 redirects. Subprocess hard-killed by OS after 15s. URL unshortener uses `follow_redirects=False` and resolves each `Location` header through `_is_ssrf_target()` before following — prevents shortener-to-private-IP redirect attacks. | ~0ms overhead |
+| **Layer 3** | Prompt injection via hidden HTML content | Strip all tags, extract visible text only via BeautifulSoup. Cap at 12,000 characters. Hidden comments and invisible divs never reach the LLM. | ~0ms |
 | **Layer 4** | Redirect to private IP after DNS resolution | Resolve hostname to IP before fetching. Re-check resolved IP against private ranges (DNS rebinding defense). | ~50ms |
 | **Layer 5 (v2)** | Scraper crash affects main app | Run scraper in dedicated Docker container or isolated cloud worker per request. Adds 2–5s cold start. Deferred — subprocess isolation sufficient for MVP scale. Production should use a hardened separate service, not a personal laptop. | 2–5s |
 
@@ -312,54 +347,54 @@ Each pattern is a markdown file in `/knowledge_base/`. Filename = pattern ID. Bo
 
 ```
 knowledge_base/
-  tw_fake_bank_login.md
-  tw_line_gift_card.md
-  tw_investment_scam.md
-  tw_fake_delivery.md
-  tw_installment_cancellation.md
-  tw_romance_scam.md
-  tw_lottery_prize.md
-  tw_government_impersonation.md
-  ...
+  bank_phishing.md             # fake bank login / account verification
+  delivery_scam.md             # fake 黑貓/7-11 delivery fee
+  gift_card_scam.md            # LINE hijack + convenience store gift card
+  government_impersonation.md  # fake NHI / police / court notifications
+  installment_cancellation.md  # fake bank call to cancel installment at ATM
+  investment_scam.md           # fake high-return investment platform
+  lottery_prize.md             # you won a prize, pay a processing fee
+  romance_scam.md              # relationship scam leading to money request
 ```
 
 **5.2 Pattern document format**
 
 ```markdown
-# Pattern ID: tw_line_gift_card
-## Name: LINE gift card scam (線上禮品卡詐騙)
-## Category: messaging_platform_scam
-## Risk level: high
-## Description
-Scammer hijacks a victim's LINE account and messages their contacts asking them to buy
-convenience store gift cards (7-Eleven, FamilyMart) and send photos of the redemption codes.
-## Red flag signals
-- Urgent request to buy gift cards from a "friend"
-- Request made via LINE message
-- Asks for card codes or photos of the card back
-- Sender cannot video call or seems evasive
-## Example message wording (話術)
-「我現在有急事，能不能幫我買一張7-11的禮品卡？我等一下還你錢」
-## Keywords (zh-TW)
-禮券, 禮品卡, 7-11, 全家, 遊戲點數, 儲值卡
-## Common URLs / domains
-(none — this scam typically does not require a URL click)
-## Source
-165.gov.tw case report, scraped 2026-04-15
+# <Title in English>
+
+Category: <zh-TW category name>
+
+Description:
+<One paragraph describing the scam pattern.>
+
+Common signals:
+- <signal 1>
+- <signal 2>
+- ...
+
+Example message:
+> <verbatim example scam message in zh-TW>
+
+Keywords:
+- <zh-TW keyword 1>
+- <zh-TW keyword 2>
+- ...
 ```
+
+Filename = pattern ID (e.g. `gift_card_scam.md` → ID `gift_card_scam`). The ID is what the LLM references in `matched_patterns`.
 
 **5.3 Taiwan scam categories to cover (v1)**
 
-- `tw_fake_bank_login` — phishing pages impersonating Taiwan banks (土地銀行, 台灣銀行, 玉山銀行)
-- `tw_line_gift_card` — LINE account hijack + gift card request
-- `tw_investment_scam` — fake high-return investment platforms (假投資詐騙)
-- `tw_fake_delivery` — fake 黑貓/7-11 delivery fee pages
-- `tw_installment_cancellation` — fake bank calls about accidental installment plans (解除分期付款)
-- `tw_romance_scam` — long-game relationship scams that eventually ask for money
-- `tw_lottery_prize` — you won a prize, pay a small processing fee
-- `tw_government_impersonation` — fake NHI / police / court notifications
+- `bank_phishing` — phishing pages impersonating Taiwan banks (土地銀行, 台灣銀行, 玉山銀行)
+- `gift_card_scam` — LINE account hijack + convenience store gift card request
+- `investment_scam` — fake high-return investment platforms (假投資詐騙)
+- `delivery_scam` — fake 黑貓/7-11 delivery fee pages
+- `installment_cancellation` — fake bank calls about accidental installment plans (解除分期付款)
+- `romance_scam` — long-game relationship scams that eventually ask for money
+- `lottery_prize` — you won a prize, pay a small processing fee
+- `government_impersonation` — fake NHI / police / court notifications
 
-Target: 20–30 pattern documents for v1.
+All 8 categories are seeded. Target for v2: 20–30 documents with more variant examples per category.
 
 **5.4 KB data sources (semi-automated scraping)**
 
@@ -389,9 +424,9 @@ Target: 20–30 pattern documents for v1.
 | **Web scraper** | httpx + BeautifulSoup | Async-capable, handles redirects, lightweight. subprocess wrapper for isolation. |
 | **Domain enricher** | python-whois | WHOIS lookup in pure Python. Cache results 24h. |
 | **Keyword search** | rank_bm25 | BM25 in pure Python, zero infra, indexes on startup from markdown files. |
-| **Vector store** | ChromaDB (in-memory) | No server needed for MVP. Persists to local file. Upgrade to hosted Chroma or Pinecone in v2. |
-| **Embeddings** | text-embedding-3-small | OpenAI. Multilingual, cheap (~$0.02/1M tokens). Handles zh-TW well. |
-| **LLM** | Claude Sonnet 4.6 | Strong structured output. JSON mode enforced. |
+| **Vector store** | ChromaDB (in-memory) | No server needed for MVP. Used only when `VOYAGE_API_KEY` is set; falls back to BM25-only otherwise. Upgrade to hosted Chroma or Pinecone in v2. |
+| **Embeddings** | voyage-multilingual-2 (Voyage AI) | Anthropic-recommended embeddings. Strong zh-TW support. Requires `VOYAGE_API_KEY`. Falls back to BM25-only if key absent. |
+| **LLM** | Claude Sonnet 4.6 (`claude-sonnet-4-6`) | Structured output enforced via `tool_choice` forced tool use — never returns free text. |
 | **Output schema** | Pydantic v2 | Validates LLM JSON output. Hard fails if schema violated — no silent garbage. |
 | **Deployment** | Hugging Face Spaces | Free, public URL, git-based deploy. Sufficient for <10 users. |
 | **Eval** | Python + pandas + CSV | Simple eval loop. No MLflow needed at this scale. |
@@ -403,15 +438,15 @@ Target: 20–30 pattern documents for v1.
 
 **7.1 Test set structure**
 
-Labeled dataset of ~100 real LINE messages stored in `eval/labeled_messages.csv`:
+Labeled dataset stored in `eval/labeled_messages.csv`. Current seed set: 25 messages (15 fraud across 8 categories, 8 safe, 2 suspicious). Run via `eval/eval.py`; use `--skip-fetch` to skip live URL resolution.
 
 ```
-message_text, label, url_present, source, notes
-"您的帳號異常，請立即點擊以下連結確認...", fraud, true, 165.gov.tw, fake bank login
-"7-11取貨通知，請於24小時內完成付款...", fraud, true, ptt_scrape, fake delivery
+message_text, label, scam_category, verdict, confidence, matched_patterns, summary, tp, fp, fn, tn
+"您的帳號異常，請立即點擊以下連結確認...", fraud, fake_bank_login, ...
+"7-11取貨通知，請於24小時內完成付款...", fraud, fake_delivery, ...
 ```
 
-Only messages with `url_present=true` are included in the eval set.
+Both URL and no-URL messages are included. Target for v2: expand to ~100 labeled messages.
 
 **7.2 Metrics**
 
@@ -494,3 +529,4 @@ WHOIS ~1s, scrape ~5–8s. Running concurrently saves wall-clock time at zero co
 | v0.1 | 4/7/2026 | Initial design. Problem statement, MVP scope, URL-only input, 6-layer architecture, security model (layers 1–4), KB structure, tech stack, open questions, decisions log. |
 | v0.2 | 4/15/2026 | Scope update: input changed from URL-only to full LINE message text. Added URL extractor, message signal analyzer, message sanitizer (Layer 0). KB shifted to semi-automated scraping from 165.gov.tw, PTT, news (new scrapers/ directory). Eval changed from labeled URLs to labeled messages with precision/recall. Output schema updated with `message_signals` + `url_signals`. Architecture updated to 8-layer data flow. |
 | v0.3 | 4/15/2026 | Scope update: system now analyzes messages with or without a URL. No-URL messages are assessed on message wording alone (text-only fraud signals), with verdict capped at `suspicious` unless wording is highly indicative. Data flow updated to branch on URL presence. Decisions log updated. |
+| v0.4 | 4/27/2026 | Phase 3 complete. All 8 KB documents seeded (bank_phishing, delivery_scam, gift_card_scam, government_impersonation, investment_scam, installment_cancellation, lottery_prize, romance_scam). Subprocess-isolated scraper and 24 h-cached WHOIS enricher added. Hybrid BM25 + semantic retrieval wired into prompt builder and verdict flow. `FraudVerdict` output enforced via Claude tool_choice. SSRF gap in URL unshortener fixed: manual per-hop redirect following with `_is_ssrf_target()` check before each hop. `load_dotenv()` added at startup. KB loaded once at module import (`_KB_DOCS`). `analyze_line_message` return type changed from bare 8-tuple to `LineAnalysisResult` (NamedTuple). `SYSTEM_PROMPT` removed from `prompt_builder.py` — lives only in `llm.py` as the API `system` parameter. Eval harness added (`eval/eval.py`, 25-message seed set). 96 unit tests passing. |
