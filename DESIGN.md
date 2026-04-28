@@ -2,7 +2,7 @@
 
 System Design Document
 
-Status: v0.5 — Phase 4 code complete (containerization, fetcher isolation, egress policy, safe fallback). HF Spaces deployment pending.
+Status: v0.5 — Phase 4 code complete (containerization, fetcher isolation, egress policy, safe fallback). HF Spaces deployment pending. Phase 5 planned: eval expansion, KB expansion, ablation study, LLM/embeddings model comparison, confidence calibration.
 
 Last updated: Tue Apr 28 2026
 
@@ -70,6 +70,14 @@ These phases keep the full RAG design in the roadmap while allowing an MVP to sh
   - Run URL fetch/unshorten/scraping in a separate isolated process, container, or worker.
   - Add stronger network controls, egress policy, and safe fallback behavior for malicious or failed URLs.
   - Keep the full design and KB/retrieval architecture intact, but ensure the system is hardened before public exposure.
+
+- **Phase 5 — Evaluation, model comparison, and optimization**
+  - Expand the eval dataset from 25 to ~100 labeled LINE messages to make precision/recall numbers statistically meaningful.
+  - Expand the knowledge base beyond 8 seed documents, guided by eval gaps identified in step 1.
+  - Run an ablation study measuring the marginal contribution of each pipeline component (message signals, URL signals, KB retrieval, page content).
+  - Compare Claude Sonnet 4.6 against open-source zh-TW-capable LLMs (Qwen2.5, TAIDE-LX) on the labeled eval set.
+  - Compare Voyage AI embeddings against open-source alternatives (BAAI/bge-m3, multilingual-e5-large) for retrieval quality.
+  - Calibrate the confidence score against the eval set; apply Platt scaling if miscalibrated.
 
 **Note:** The KB and retrieval architecture remain part of the long-term design, but they are not blockers for Phase 1. This lets the project ship a safe MVP first and grow toward the full RAG-enabled system.
 
@@ -248,6 +256,55 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 - [x] Isolate URL fetcher into a separate worker service (fetcher/main.py, fetcher/Dockerfile, pipeline/fetcher_client.py, docker-compose.yml)
 - [x] Apply network egress policy to the fetcher worker (fetcher/entrypoint.sh: iptables blocks metadata + private IPs; docker-compose.yml: cap_add NET_ADMIN; gosu privilege drop)
 - [x] Add safe fallback when fetcher worker is unreachable (fetcher_client: sentinel returns instead of local fallback when FETCHER_URL set; app.py: fetcher_unavailable surfaced as url_signal; high-risk URL skip: idn_homograph or 3+ signals skips page fetch)
+
+### Phase 5 — Implementation steps
+
+1. Expand the eval dataset to ~100 labeled LINE messages.
+   - Run existing scrapers (`scrape_165.py`, `scrape_ptt.py`, `scrape_news.py`) to collect raw candidates from 165.gov.tw, PTT, and news articles.
+   - Human-review and label candidates: fraud / suspicious / safe, with scam category tag.
+   - Target distribution: ~15 messages per fraud category, ~20 safe, ~10 suspicious edge cases.
+   - Add to `eval/labeled_messages.csv` and re-run `eval/eval.py` to establish a baseline.
+
+2. Expand the knowledge base guided by eval gaps.
+   - Identify which fraud categories have the weakest eval verdict accuracy after step 1.
+   - Add more KB documents for weak categories: additional phrasings, newer scam variants, edge-case examples.
+   - Target: 20–30 documents total (up from 8 seed files). Re-run eval to confirm improvement.
+
+3. Run an ablation study.
+   - Evaluate the pipeline with components selectively disabled: message signals only, URL signals only, KB retrieval only (no page content), full pipeline.
+   - Also compare BM25-only vs semantic-only vs hybrid retrieval.
+   - Produce a results table showing the marginal contribution of each component to precision, recall, and F1.
+   - Document findings in `eval/ablation_results.csv` and summarize in DESIGN.md.
+
+4. LLM model comparison.
+   - Evaluate two open-source zh-TW-capable alternatives against Claude Sonnet 4.6 on the expanded labeled set:
+     - **Qwen2.5-72B** (Alibaba) — strong zh-TW benchmark performance, open weights.
+     - **TAIDE-LX-7B-Chat** — Taiwan government-backed model, trained on Traditional Chinese corpus.
+   - Key tradeoffs to document: structured output reliability (Claude forced tool use vs constrained decoding), zh-TW fluency in `plain_summary`, inference cost (API vs GPU hosting), verdict accuracy on the eval set.
+   - Add a model comparison table to §6 Tech stack.
+
+5. Embeddings model comparison.
+   - Evaluate open-source embedding alternatives against Voyage AI `voyage-multilingual-2`:
+     - **BAAI/bge-m3** — strong Chinese retrieval, self-hosted (~570MB), no API dependency.
+     - **multilingual-e5-large** — broad multilingual coverage, lighter weight.
+   - Measure retrieval quality (top-3 KB match accuracy) on the expanded eval set.
+   - Key tradeoff: API cost and dependency (Voyage AI) vs self-hosted cold-start and memory (bge-m3).
+   - Update ChromaDB configuration to support swappable embedding backends.
+
+6. Confidence calibration.
+   - Plot a reliability diagram: does LLM-reported confidence ≥ 0.9 actually correlate with fraud rate?
+   - If miscalibrated, apply Platt scaling using the eval set labels.
+   - Document calibration results and update `plain_summary` guidance if threshold adjustments are needed.
+
+### Phase 5 progress tracker
+
+- [ ] Expand eval dataset to ~100 labeled messages via scrapers + human review
+- [ ] Re-run eval harness to establish baseline precision/recall by category
+- [ ] Expand KB to 20–30 documents guided by category-level eval gaps
+- [ ] Run ablation study (message-only, URL-only, KB-only, BM25-only, semantic-only, full pipeline)
+- [ ] LLM comparison: Qwen2.5-72B and TAIDE-LX-7B-Chat vs Claude Sonnet 4.6
+- [ ] Embeddings comparison: bge-m3 and multilingual-e5-large vs voyage-multilingual-2
+- [ ] Confidence calibration: reliability diagram + Platt scaling if needed
 
 **Constraints**
 
@@ -473,7 +530,20 @@ message_text, label, scam_category, verdict, confidence, matched_patterns, summa
 "7-11取貨通知，請於24小時內完成付款...", fraud, fake_delivery, ...
 ```
 
-Both URL and no-URL messages are included. Target for v2: expand to ~100 labeled messages.
+Both URL and no-URL messages are included. **Phase 5 target: ~100 labeled messages** (~15 per fraud category, ~20 safe, ~10 suspicious edge cases) to make per-category precision/recall statistically meaningful.
+
+**7.1.1 Ablation study structure (Phase 5)**
+
+Eval harness will be extended to support component toggling for ablation runs. Results stored in `eval/ablation_results.csv`.
+
+| Run | Components active | Purpose |
+|---|---|---|
+| message-only | message signals | Baseline: wording analysis alone |
+| url-only | URL signals + heuristics | URL branch contribution without message context |
+| kb-only (BM25) | BM25 retrieval + full pipeline | BM25 retrieval in isolation |
+| kb-only (semantic) | semantic retrieval + full pipeline | Semantic retrieval in isolation |
+| no-page-content | full pipeline, page fetch disabled | Value of fetching page vs signals-only |
+| full | all components | End-to-end system |
 
 **7.2 Metrics**
 
@@ -546,6 +616,15 @@ Prevents silent schema violations. Fail loudly if LLM returns unexpected format.
 
 **Domain enricher: parallel with scraper:**
 WHOIS ~1s, scrape ~5–8s. Running concurrently saves wall-clock time at zero cost.
+
+**Phase 5 — LLM choice (Claude vs open-source zh-TW models):**
+Claude Sonnet 4.6 offers reliable structured output via forced tool use and strong multilingual reasoning. Open-source alternatives (Qwen2.5-72B, TAIDE-LX-7B-Chat) eliminate per-call API cost and may perform better on Traditional Chinese `plain_summary` fluency, but require GPU hosting and depend on constrained decoding (e.g. outlines, lm-format-enforcer) for structured output — adding infrastructure complexity and a new failure mode. Phase 5 will measure verdict accuracy on the labeled eval set across all three to make this decision evidence-based rather than assumed.
+
+**Phase 5 — Embeddings choice (Voyage AI vs open-source):**
+Voyage AI `voyage-multilingual-2` is Anthropic-recommended, strong on zh-TW, and zero infrastructure overhead. BAAI/bge-m3 is the strongest open-source alternative for Chinese retrieval and eliminates the API dependency and per-token cost, but adds ~570MB model weight to the container and a self-hosted inference step. Phase 5 will compare retrieval quality (top-3 KB match accuracy on the eval set) to determine whether the dependency is justified by measurable quality gains.
+
+**Phase 5 — KB expansion driven by eval gaps (not upfront):**
+Adding KB documents without measuring which categories are weak risks expanding areas that already perform well. Eval expansion comes first; KB additions are then targeted at the weakest-performing fraud categories identified by the harness.
 
 ---
 
