@@ -298,7 +298,7 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 
 ### Phase 5 progress tracker
 
-- [ ] Expand eval dataset to ~100 labeled messages via scrapers + human review
+- [x] Expand eval dataset to ~100 labeled messages via scrapers + human review (110 messages: 80 fraud across 8 categories, 20 safe, 10 suspicious; scrape_165.py added)
 - [ ] Re-run eval harness to establish baseline precision/recall by category
 - [ ] Expand KB to 20–30 documents guided by category-level eval gaps
 - [ ] Run ablation study (message-only, URL-only, KB-only, BM25-only, semantic-only, full pipeline)
