@@ -12,7 +12,7 @@ pinned: false
 
 > A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** Phase 3 complete — RAG pipeline, knowledge base, security hardening (Layers 0–4). Phase 4 in progress: production deployment.  
+**Status:** Phase 4 code complete — containerized, fetcher isolated, egress policy applied. HF Spaces deployment pending.  
 **Demo:** Run locally with `python3 app.py` and open `http://127.0.0.1:7860`  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
@@ -76,14 +76,15 @@ URL extractor
 
 | Layer | Choice |
 |---|---|
-| UI | Gradio on Hugging Face Spaces |
+| UI | Gradio (Docker container, port 7860) |
+| Fetcher worker | FastAPI service — isolates URL fetch / unshorten / WHOIS in a separate container |
 | Scraper | httpx + BeautifulSoup |
 | Keyword search | rank_bm25 |
 | Vector store | ChromaDB (in-memory) |
-| Embeddings | OpenAI text-embedding-3-small |
-| LLM | Claude Sonnet |
+| Embeddings | Voyage AI voyage-multilingual-2 |
+| LLM | Claude Sonnet 4.6 (`claude-sonnet-4-6`) |
 | Output schema | Pydantic v2 |
-| Deployment | Hugging Face Spaces (free) |
+| Deployment | Hugging Face Spaces — Docker SDK (pending) |
 
 ## Scam categories covered
 
@@ -98,11 +99,11 @@ URL extractor
 
 ## Security
 
-Four defense layers protect the app from SSRF, prompt injection, and resource exhaustion. See [DESIGN.md §4](./DESIGN.md#4-security-design) for details.
+Six defense layers protect the app from SSRF, prompt injection, and resource exhaustion. See [DESIGN.md §4](./DESIGN.md#4-security-design) for details.
 
 ## Evaluation
 
-Precision and recall measured against a labeled test set of ~100 real Taiwan fraud LINE messages. Recall is the primary optimization target — missing a fraud causes real harm; false alarms are merely annoying.
+Precision and recall measured against a labeled test set. Current seed set: 25 messages (15 fraud across 8 categories, 8 safe, 2 suspicious). Target for v2: ~100 messages. Recall is the primary optimization target — missing a fraud causes real harm; false alarms are merely annoying.
 
 Local test coverage is organized by component, with dedicated files for each pipeline module and end-to-end app integration. See `tests/test_sanitizer.py`, `tests/test_extractor.py`, `tests/test_validator.py`, `tests/test_signal_analyzer.py`, `tests/test_unshortener.py`, `tests/test_url_signals.py`, `tests/test_url_metadata.py`, and `tests/test_app.py`.
 
@@ -113,39 +114,59 @@ Results documented in [`eval/results.csv`](./eval/) as the project develops.
 ```
 taiwan-fraud-detector/
 ├── README.md
-├── DESIGN.md                  # Living system design document
-├── app.py                     # Gradio app entry point
+├── DESIGN.md                    # Living system design document
+├── Dockerfile                   # Main app container (HF Spaces / Docker)
+├── docker-compose.yml           # Orchestrates app + fetcher worker
+├── .dockerignore
+├── app.py                       # Gradio app entry point
+├── requirements.txt
 ├── pipeline/
-│   ├── extractor.py           # URL extraction from message text
-│   ├── validator.py           # URL validation + SSRF defense
-│   ├── scraper.py             # Web scraper (subprocess isolated)
-│   ├── enricher.py            # Domain enricher (WHOIS)
-│   ├── sanitizer.py           # Content sanitizer (page + message)
-│   ├── retriever.py           # Hybrid BM25 + semantic search
-│   ├── prompt_builder.py      # Augmented prompt assembly
-│   └── output.py              # Pydantic schema + formatter
+│   ├── extractor.py             # URL extraction from message text
+│   ├── validator.py             # URL validation + SSRF defense
+│   ├── sanitizer.py             # Message + page content sanitizer
+│   ├── signal_analyzer.py       # Message fraud signal detection
+│   ├── url_signals.py           # URL-origin heuristic signals
+│   ├── url_metadata.py          # URL metadata extraction
+│   ├── unshortener.py           # URL unshortening + per-hop SSRF check
+│   ├── scraper.py               # Web scraper (subprocess isolated)
+│   ├── enricher.py              # Domain enricher (WHOIS, 24h cache)
+│   ├── retriever.py             # Hybrid BM25 + semantic search
+│   ├── prompt_builder.py        # Augmented prompt assembly
+│   ├── llm.py                   # Claude Sonnet 4.6 via forced tool use
+│   ├── output.py                # Pydantic schema + formatter
+│   └── fetcher_client.py        # HTTP client for fetcher worker
+├── fetcher/
+│   ├── main.py                  # FastAPI fetcher worker
+│   ├── Dockerfile               # Fetcher container (iptables egress policy)
+│   ├── entrypoint.sh            # iptables setup + gosu privilege drop
+│   └── requirements.txt
 ├── tests/
-│   ├── test_app.py            # App integration coverage
-│   ├── test_extractor.py      # URL extraction tests
-│   ├── test_sanitizer.py      # Message sanitization tests
-│   ├── test_signal_analyzer.py# Fraud signal detection tests
-│   ├── test_unshortener.py    # URL unshortening tests
-│   ├── test_url_metadata.py   # URL metadata extraction tests
-│   ├── test_url_signals.py    # URL-origin heuristics tests
-│   └── test_validator.py      # URL validation tests
-├── knowledge_base/            # Taiwan scam pattern markdown files
+│   ├── test_app.py              # App integration coverage
+│   ├── test_extractor.py
+│   ├── test_sanitizer.py
+│   ├── test_signal_analyzer.py
+│   ├── test_unshortener.py
+│   ├── test_url_signals.py
+│   ├── test_url_metadata.py
+│   ├── test_validator.py
+│   ├── test_enricher.py
+│   ├── test_scraper.py
+│   ├── test_retriever.py
+│   ├── test_prompt_builder.py
+│   ├── test_llm.py
+│   └── test_output.py
+├── knowledge_base/              # Taiwan scam pattern markdown files
 ├── scrapers/
-│   ├── scrape_165.py          # Scrape 165.npa.gov.tw fraud cases
-│   ├── scrape_ptt.py          # Scrape PTT community fraud posts
-│   ├── scrape_news.py         # Scrape CNA/UDN fraud news articles
-│   ├── scrape_twcert.py       # Scrape TWCERT phishing alerts
-│   ├── build_kb.py            # Convert reviewed scrapes → KB markdown
-│   └── raw/                   # Raw scrape dumps (git-ignored)
-├── eval/
-│   ├── eval.py                # Evaluation harness
-│   ├── labeled_messages.csv   # Ground truth test set (full LINE messages)
-│   └── results.csv            # Eval results by prompt version
-└── requirements.txt
+│   ├── scrape_165.py            # Scrape 165.npa.gov.tw fraud cases
+│   ├── scrape_ptt.py            # Scrape PTT community fraud posts
+│   ├── scrape_news.py           # Scrape CNA/UDN fraud news articles
+│   ├── scrape_twcert.py         # Scrape TWCERT phishing alerts
+│   ├── build_kb.py              # Convert reviewed scrapes → KB markdown
+│   └── raw/                     # Raw scrape dumps (git-ignored)
+└── eval/
+    ├── eval.py                  # Evaluation harness
+    ├── labeled_messages.csv     # Ground truth test set (full LINE messages)
+    └── results.csv              # Eval results by prompt version
 ```
 
 ## Running locally

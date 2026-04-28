@@ -2,9 +2,9 @@
 
 System Design Document
 
-Status: v0.4 — Phase 3 complete (RAG + KB + security hardening)
+Status: v0.5 — Phase 4 code complete (containerization, fetcher isolation, egress policy, safe fallback). HF Spaces deployment pending.
 
-Last updated: Mon Apr 27 2026
+Last updated: Tue Apr 28 2026
 
 ---
 
@@ -39,9 +39,9 @@ This app accepts the full LINE message text (containing a URL and surrounding wo
 | ✓ Semi-automated KB scraping (165.gov.tw, PTT, news) | — Multi-language support beyond zh-TW |
 | ✓ Hybrid RAG retriever (BM25 + semantic) | — Full container sandboxing (layer 5) |
 | ✓ Structured JSON output + plain summary in zh-TW | — Production monitoring dashboard |
-| ✓ Security hardening (layers 0–4) | — Custom domain / paid hosting |
+| ✓ Security hardening (layers 0–5) | — Custom domain / paid hosting |
 | ✓ Eval harness with precision/recall on labeled messages | |
-| ✓ Deployed on Hugging Face Spaces (free) | |
+| ✓ Containerized for Docker + HF Spaces (deployment pending) | |
 
 **Implementation phases**
 
@@ -278,7 +278,7 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 | **Domain enricher** | WHOIS age, registrar country, typosquat | python-whois + string analysis | **v1** |
 | **Content sanitizer** | Strip HTML, cap tokens, block prompt inject from page | BeautifulSoup + regex | **v1** |
 | **BM25 keyword search** | Lexical match on fraud pattern KB | rank_bm25 | **v1** |
-| **Semantic search** | Embedding similarity on fraud pattern KB | ChromaDB + text-embedding-3-small | **v1** |
+| **Semantic search** | Embedding similarity on fraud pattern KB | ChromaDB + voyage-multilingual-2 (Voyage AI) | **v1** |
 | **Knowledge base** | Taiwan/LINE scam pattern documents | Markdown files in /knowledge_base/ | **v1** |
 | **Prompt builder** | Assemble system + message signals + URL content + KB patterns | Python f-strings / Jinja2 | **v1** |
 | **LLM reasoning** | Analyze and produce structured verdict | Claude Sonnet 4.6 | **v1** |
@@ -286,6 +286,7 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 | **Gradio UI** | Web interface, shareable link | Gradio on HF Spaces | **v1** |
 | **Eval harness** | Measure precision/recall on labeled messages | Python + pandas + CSV | **v1** |
 | **KB scraper** | Semi-automated scraping from 165.gov.tw, PTT, news | httpx + BeautifulSoup | **v1** |
+| **Fetcher worker** | Isolated container for URL fetch / unshorten / WHOIS | FastAPI + uvicorn, port 8080 (internal only) | **v1** |
 | **LINE bot interface** | Accept messages directly in LINE | LINE Messaging API | **v2** |
 
 **3.2 Data flow**
@@ -302,13 +303,14 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 **Branch A — URL found:**
 
 5. **URL validator** runs synchronously — blocks private IPs, localhost, non-http schemes, cloud metadata endpoints (~0ms)
-6. **URL unshortener** resolves redirects (lin.ee, bit.ly). Max 3 hops.
-7. These two run in parallel via `ThreadPoolExecutor`:
-   - **Web scraper** fetches page (5s connect timeout, 10s read, 2MB cap, subprocess isolated)
-   - **Domain enricher** runs WHOIS lookup + domain age + typosquat analysis (cached 24h)
-8. **Content sanitizer** strips HTML to visible text only. Caps at 12,000 characters.
-9. **RAG retriever** runs hybrid search using BOTH message text and page content as query. Returns top-3 KB pattern documents.
-10. **Prompt builder** assembles: message signals + URL metadata + WHOIS data + page content + retrieved KB patterns (system instructions live in `llm.py` as the API `system` parameter)
+6. **URL unshortener** resolves redirects (lin.ee, bit.ly). Max 3 hops. Routed through fetcher worker when `FETCHER_URL` is set.
+7. **URL signal analyzer** checks TLD, IDN homograph, suspicious keywords. If high-risk (idn_homograph or 3+ signals), skip page fetch and proceed to step 9 with WHOIS only.
+8. These two run in parallel via `ThreadPoolExecutor` (skipped if high-risk URL):
+   - **Web scraper** fetches page via fetcher worker HTTP API (falls back to subprocess when running locally). 5s connect, 10s read, 2MB cap.
+   - **Domain enricher** runs WHOIS lookup + domain age via fetcher worker (cached 24h).
+9. **Content sanitizer** strips HTML to visible text only. Caps at 12,000 characters.
+10. **RAG retriever** runs hybrid search using BOTH message text and page content as query. Returns top-3 KB pattern documents.
+11. **Prompt builder** assembles: message signals + URL metadata + WHOIS data + page content + retrieved KB patterns (system instructions live in `llm.py` as the API `system` parameter)
 
 **Branch B — No URL found:**
 
@@ -318,8 +320,8 @@ Data flows top-to-bottom: full LINE message → sanitize input → extract URL �
 
 **Both branches continue:**
 
-11. **LLM** produces structured output enforced via `tool_choice={"type":"tool","name":"submit_verdict"}` (forced tool use — Claude never returns free text)
-12. **Output formatter** validates schema with Pydantic, renders verdict card + plain summary in Gradio
+12. **LLM** produces structured output enforced via `tool_choice={"type":"tool","name":"submit_verdict"}` (forced tool use — Claude never returns free text)
+13. **Output formatter** validates schema with Pydantic, renders verdict card + plain summary in Gradio
 
 **3.3 Output schema**
 
@@ -340,7 +342,7 @@ class FraudVerdict(BaseModel):
 
 **4. Security design**
 
-The app now has two attack surfaces: (1) raw text pasted by users (prompt injection via message content), and (2) arbitrary URLs fetched on their behalf (SSRF). Five defense layers in v1, sixth deferred.
+The app has two attack surfaces: (1) raw text pasted by users (prompt injection via message content), and (2) arbitrary URLs fetched on their behalf (SSRF). Six defense layers implemented in v1.
 
 | **Layer** | **Threat blocked** | **Implementation** | **Cost** |
 |---|---|---|---|
@@ -349,20 +351,20 @@ The app now has two attack surfaces: (1) raw text pasted by users (prompt inject
 | **Layer 2** | Redirect abuse, timeout/hang, oversized responses | httpx in subprocess. 5s connect timeout, 10s read timeout, 2MB response cap, max 3 redirects. Subprocess hard-killed by OS after 15s. URL unshortener uses `follow_redirects=False` and resolves each `Location` header through `_is_ssrf_target()` before following — prevents shortener-to-private-IP redirect attacks. | ~0ms overhead |
 | **Layer 3** | Prompt injection via hidden HTML content | Strip all tags, extract visible text only via BeautifulSoup. Cap at 12,000 characters. Hidden comments and invisible divs never reach the LLM. | ~0ms |
 | **Layer 4** | Redirect to private IP after DNS resolution | Resolve hostname to IP before fetching. Re-check resolved IP against private ranges (DNS rebinding defense). | ~50ms |
-| **Layer 5 (v2)** | Scraper crash affects main app | Run scraper in dedicated Docker container or isolated cloud worker per request. Adds 2–5s cold start. Deferred — subprocess isolation sufficient for MVP scale. Production should use a hardened separate service, not a personal laptop. | 2–5s |
+| **Layer 5** | Scraper crash / exploit affects main app | `fetcher/` FastAPI worker runs in a separate container. iptables egress policy blocks cloud metadata endpoints + RFC 1918 private IPs; allows DNS/WHOIS/HTTP/HTTPS only. Main app calls worker via HTTP (`FETCHER_URL`); falls back to in-process when running without Docker Compose. Not available on HF Spaces (single-container). | ~0ms overhead |
 
 ---
 
 **4.1 Deployment and URL-fetch isolation**
 
-For this app, untrusted URL fetching is the highest-risk operation. The design therefore recommends a split architecture:
+Untrusted URL fetching is the highest-risk operation. The system implements a split architecture:
 
-- Host the public-facing app and message parser in one service.
-- Host the URL unshortener / fetcher / scraper in a separate isolated environment, ideally a cloud VM, container, or serverless worker.
-- Keep the production fetcher separate from any sensitive developer workstation and limit its network egress to HTTP/HTTPS only.
-- If a URL is deemed high-risk by heuristics or reputation checks, avoid fetching it entirely and still return a conservative verdict.
+- The Gradio app (`app.py`) handles message analysis, RAG retrieval, and LLM inference.
+- The fetcher worker (`fetcher/main.py`) handles all untrusted network operations: URL unshortening, page fetching, and WHOIS. It runs in a separate container with an iptables egress policy that blocks cloud metadata endpoints and RFC 1918 private IPs, allowing only DNS/WHOIS/HTTP/HTTPS outbound.
+- The main app communicates with the fetcher via HTTP (`FETCHER_URL=http://fetcher:8080`). If the worker is unreachable, it returns safe sentinel values and continues to produce a verdict from message and URL signals alone.
+- URLs flagged as high-risk by heuristics (IDN homograph, or 3+ independent signals) skip the page fetch entirely. WHOIS is still collected for domain age.
 
-This approach minimizes the risk that a malicious URL can directly attack your local laptop or the main application environment.
+When running without Docker Compose (e.g. HF Spaces single-container or local Python), URL fetch operations fall back to in-process subprocess calls. Layer 5 isolation is only active under Docker Compose.
 
 **5. Knowledge base**
 
@@ -555,3 +557,4 @@ WHOIS ~1s, scrape ~5–8s. Running concurrently saves wall-clock time at zero co
 | v0.2 | 4/15/2026 | Scope update: input changed from URL-only to full LINE message text. Added URL extractor, message signal analyzer, message sanitizer (Layer 0). KB shifted to semi-automated scraping from 165.gov.tw, PTT, news (new scrapers/ directory). Eval changed from labeled URLs to labeled messages with precision/recall. Output schema updated with `message_signals` + `url_signals`. Architecture updated to 8-layer data flow. |
 | v0.3 | 4/15/2026 | Scope update: system now analyzes messages with or without a URL. No-URL messages are assessed on message wording alone (text-only fraud signals), with verdict capped at `suspicious` unless wording is highly indicative. Data flow updated to branch on URL presence. Decisions log updated. |
 | v0.4 | 4/27/2026 | Phase 3 complete. All 8 KB documents seeded (bank_phishing, delivery_scam, gift_card_scam, government_impersonation, investment_scam, installment_cancellation, lottery_prize, romance_scam). Subprocess-isolated scraper and 24 h-cached WHOIS enricher added. Hybrid BM25 + semantic retrieval wired into prompt builder and verdict flow. `FraudVerdict` output enforced via Claude tool_choice. SSRF gap in URL unshortener fixed: manual per-hop redirect following with `_is_ssrf_target()` check before each hop. `load_dotenv()` added at startup. KB loaded once at module import (`_KB_DOCS`). `analyze_line_message` return type changed from bare 8-tuple to `LineAnalysisResult` (NamedTuple). `SYSTEM_PROMPT` removed from `prompt_builder.py` — lives only in `llm.py` as the API `system` parameter. Eval harness added (`eval/eval.py`, 25-message seed set). 96 unit tests passing. |
+| v0.5 | 4/28/2026 | Phase 4 code complete. `Dockerfile` + `.dockerignore` for main app (python:3.11-slim, UID 1000, port 7860). `docker-compose.yml` orchestrates app + fetcher on internal bridge network. `fetcher/` FastAPI worker isolates unshorten/fetch/enrich; `fetcher/Dockerfile` installs iptables + gosu; `fetcher/entrypoint.sh` applies OUTPUT egress policy (blocks metadata + RFC 1918, allows DNS/WHOIS/HTTP/HTTPS) before dropping to appuser via gosu. `pipeline/fetcher_client.py` routes fetch ops to worker when `FETCHER_URL` set; returns safe sentinel (not in-process fallback) when worker configured but unreachable. `app.py`: high-risk URL skip (idn_homograph or 3+ signals skips page fetch); `fetcher_unavailable` surfaced as url_signal. HF Spaces Docker frontmatter added to `README.md`. HF Spaces deployment pending. |
