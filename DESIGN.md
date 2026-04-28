@@ -224,6 +224,31 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 - [x] Add optional page content ingestion path under isolation
 - [x] Add Phase 3 tests and evaluation cases
 
+### Phase 4 — Implementation steps
+
+1. Containerize the app and configure deployment to Hugging Face Spaces.
+   - Write a `Dockerfile` (python:3.11-slim, non-root user, port 7860).
+   - Write a `.dockerignore` excluding tests, scrapers, eval data, and secrets.
+   - Update `demo.launch()` to bind on `0.0.0.0` and respect the `PORT` env var.
+   - Add HF Spaces YAML frontmatter to `README.md` (`sdk: docker`, `app_port: 7860`).
+   - Add Docker run instructions and HF Spaces deployment steps to `README.md`.
+2. Isolate the URL fetcher into a separate container or worker.
+   - Move `pipeline/scraper.py`, `pipeline/unshortener.py`, and `pipeline/enricher.py` into a dedicated worker service.
+   - Expose the worker via an internal HTTP API; the main app calls it rather than spawning subprocesses.
+   - Apply network egress policy to the worker: HTTP/HTTPS only, no access to internal metadata endpoints.
+3. Add stronger egress controls and safe fallback behavior.
+   - Configure the fetcher worker's network so it cannot reach cloud metadata endpoints (169.254.169.254) or private IP ranges at the network level.
+   - If the worker fails, crashes, or times out, the main app falls back to a conservative verdict without crashing.
+   - If a URL is flagged high-risk by heuristics, skip the fetch entirely and still return a verdict.
+
+### Phase 4 progress tracker
+
+- [x] Containerize app: Dockerfile, .dockerignore, 0.0.0.0 bind, HF Spaces frontmatter
+- [ ] Deploy to Hugging Face Spaces and confirm live URL
+- [x] Isolate URL fetcher into a separate worker service (fetcher/main.py, fetcher/Dockerfile, pipeline/fetcher_client.py, docker-compose.yml)
+- [x] Apply network egress policy to the fetcher worker (fetcher/entrypoint.sh: iptables blocks metadata + private IPs; docker-compose.yml: cap_add NET_ADMIN; gosu privilege drop)
+- [x] Add safe fallback when fetcher worker is unreachable (fetcher_client: sentinel returns instead of local fallback when FETCHER_URL set; app.py: fetcher_unavailable surfaced as url_signal; high-risk URL skip: idn_homograph or 3+ signals skips page fetch)
+
 **Constraints**
 
 - Expected users: <10 concurrent, MVP phase

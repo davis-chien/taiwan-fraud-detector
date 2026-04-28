@@ -15,16 +15,14 @@ from pipeline import (
     bm25_search,
     extract_url,
     extract_url_metadata,
-    fetch_page,
-    get_domain_info,
     hybrid_search,
     infer_llm_prompt,
     load_kb_documents,
     sanitize_message,
     sanitize_page_content,
-    unshorten_url,
     validate_url,
 )
+from pipeline.fetcher_client import fetch_page, get_domain_info, unshorten_url
 from pipeline.output import FraudVerdict
 
 _KB_DOCS: List[Dict[str, Any]] = load_kb_documents("knowledge_base")
@@ -166,22 +164,37 @@ def analyze_line_message(raw_message: str) -> LineAnalysisResult:
 
         url_signals = analyze_url_signals(url)
 
-        # Fetch page content and WHOIS in parallel (subprocess-isolated + cached).
+        # Skip page fetch when the URL is already high-risk by heuristics.
+        # IDN homograph is a strong deception signal on its own; 3+ independent
+        # signals give enough evidence for a verdict without fetching the page.
         hostname = urlparse(url).hostname or ""
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            scrape_future = executor.submit(fetch_page, url)
-            enrich_future = executor.submit(get_domain_info, hostname)
+        _high_risk = "idn_homograph" in url_signals or len(url_signals) >= 3
 
-        try:
-            page_result = scrape_future.result(timeout=20)
-            page_content = sanitize_page_content(page_result.get("text", ""))
-        except Exception:
-            page_content = ""
+        if not _high_risk:
+            # Fetch page content and WHOIS in parallel.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                scrape_future = executor.submit(fetch_page, url)
+                enrich_future = executor.submit(get_domain_info, hostname)
 
-        try:
-            domain_info = enrich_future.result(timeout=15)
-        except Exception:
-            domain_info = None
+            try:
+                page_result = scrape_future.result(timeout=20)
+                if page_result.get("error") == "fetcher_unavailable":
+                    url_signals = url_signals + ["fetcher_unavailable"]
+                else:
+                    page_content = sanitize_page_content(page_result.get("text", ""))
+            except Exception:
+                page_content = ""
+
+            try:
+                domain_info = enrich_future.result(timeout=15)
+            except Exception:
+                domain_info = None
+        else:
+            # High-risk URL: skip page fetch, still collect WHOIS for domain age.
+            try:
+                domain_info = get_domain_info(hostname)
+            except Exception:
+                domain_info = None
 
     msg_signals = analyze_message_signals(sanitized)
     kb_docs = _KB_DOCS
@@ -268,7 +281,7 @@ def launch_ui() -> None:
         input_box.submit(analyze_line_message, inputs=[input_box], outputs=outputs)
         gr.Button("分析訊息").click(analyze_line_message, inputs=[input_box], outputs=outputs)
 
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", 7860)))
 
 
 if __name__ == "__main__":

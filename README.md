@@ -1,8 +1,18 @@
+---
+title: Taiwan Fraud Detector
+emoji: 🔍
+colorFrom: blue
+colorTo: red
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Taiwan Fraud Detector 台灣詐騙訊息偵測器
 
 > A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** Phase 1 local MVP complete — safe LINE message analysis, URL extraction, validation, and a Gradio UI are implemented. Phase 2 safe URL branch features are also implemented, including URL unshortening, URL-origin signal heuristics, and safe URL metadata logging.  
+**Status:** Phase 3 complete — RAG pipeline, knowledge base, security hardening (Layers 0–4). Phase 4 in progress: production deployment.  
 **Demo:** Run locally with `python3 app.py` and open `http://127.0.0.1:7860`  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
@@ -145,9 +155,43 @@ git clone https://github.com/davis-chien/taiwan-fraud-detector
 cd taiwan-fraud-detector
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=your_key
-export OPENAI_API_KEY=your_key
+export VOYAGE_API_KEY=your_key   # optional — enables semantic search; falls back to BM25
 python app.py
 ```
+
+## Deploying to Hugging Face Spaces
+
+This repo is configured as a **Docker Space** (`sdk: docker`, `app_port: 7860`). To deploy:
+
+1. Create a new Space at huggingface.co → "Docker" SDK.
+2. Push this repo as the Space repo (or link it via HF git remote).
+3. Set the following secrets in the Space settings:
+   - `ANTHROPIC_API_KEY` — required for LLM inference
+   - `VOYAGE_API_KEY` — optional, enables semantic search alongside BM25
+
+HF Spaces will build the `Dockerfile` automatically and expose port 7860.
+
+## Running with Docker Compose (recommended)
+
+Starts the Gradio app and the isolated fetcher worker as separate containers:
+
+```bash
+ANTHROPIC_API_KEY=your_key VOYAGE_API_KEY=your_key docker compose up --build
+```
+
+The app is available at `http://localhost:7860`. The fetcher worker runs internally on port 8080 and is not exposed to the host.
+
+## Running the app container only (no fetcher isolation)
+
+```bash
+docker build -t taiwan-fraud-detector .
+docker run -p 7860:7860 \
+  -e ANTHROPIC_API_KEY=your_key \
+  -e VOYAGE_API_KEY=your_key \
+  taiwan-fraud-detector
+```
+
+Without `FETCHER_URL` set, URL fetch operations fall back to in-process subprocess calls.
 
 ## Learning context
 

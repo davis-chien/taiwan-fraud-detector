@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  fetcher:
+    build:
+      context: .
+      dockerfile: fetcher/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "7860:7860"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - FETCHER_URL=http://fetcher:8080
+    depends_on:
+      fetcher:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge

@@ -1,0 +1,13 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.local
+scrapers/
+tests/
+eval/
+chroma_db/
+.DS_Store
