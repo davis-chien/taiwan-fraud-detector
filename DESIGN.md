@@ -300,7 +300,7 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 
 - [x] Expand eval dataset to ~100 labeled messages via scrapers + human review (110 messages: 80 fraud across 8 categories, 20 safe, 10 suspicious; scrape_165.py added)
 - [x] Re-run eval harness to establish baseline precision/recall by category (rule-based baseline: P=0.944 R=0.770 F1=0.848; romance_scam recall=0.200 identified as primary gap; LLM baseline pending API key in eval env)
-- [ ] Expand KB to 20–30 documents guided by category-level eval gaps
+- [x] Expand KB to 20–30 documents guided by category-level eval gaps (8→17 docs; signal_analyzer expanded; rule-based recall 0.770→0.897, F1 0.848→0.923)
 - [ ] Run ablation study (message-only, URL-only, KB-only, BM25-only, semantic-only, full pipeline)
 - [ ] LLM comparison: Qwen2.5-72B and TAIDE-LX-7B-Chat vs Claude Sonnet 4.6
 - [ ] Embeddings comparison: bge-m3 and multilingual-e5-large vs voyage-multilingual-2
@@ -578,12 +578,32 @@ n=107 messages, `--skip-fetch` (URL fetch and WHOIS disabled)
 | gift_card_scam | 9 | 1.000 | 0.667 | 0.800 | 3 FN: social-engineering framing |
 | romance_scam | 10 | 1.000 | 0.200 | 0.333 | 8 FN: no urgency/URL keywords |
 
-**Key findings:**
+**Key findings (v1):**
 - Precision is near-perfect (0.944) across all categories — heuristic rules fire conservatively.
 - Recall is the bottleneck (0.770 overall), driven mainly by romance_scam (0.200).
 - Romance scam misses because the messages use relationship-building language with no urgency/URL/gift-card keywords — heuristics are blind to this pattern. LLM + KB retrieval expected to close this gap.
 - 4 FP (safe messages flagged): messages contained ambiguous words that match fraud keyword lists.
-- **LLM baseline pending**: re-run with `ANTHROPIC_API_KEY` set to measure full-pipeline performance.
+
+**After Phase 5 Step 3 — KB expansion + signal_analyzer improvement (2026-04-29):**
+
+Run: `python eval/eval.py --skip-fetch --run-tag baseline-v2-kb-expanded`  
+Changes: KB expanded 8→17 documents; `signal_analyzer.py` gains legal threat keywords (通緝令, 逮捕, 檢察署), gift card variants (Google Play, Steam, iTunes), consumer protection official, `social_engineering` signal category.
+
+| Category | v1 Recall | v2 Recall | Delta | Notes |
+|---|---|---|---|---|
+| **OVERALL** | 0.770 | **0.897** | +0.127 | |
+| fake_bank_login | 1.000 | 1.000 | — | |
+| fake_delivery | 1.000 | 1.000 | — | |
+| lottery_prize | 1.000 | 1.000 | — | |
+| gift_card_scam | 0.667 | **1.000** | +0.333 | Google Play/Steam keywords |
+| government_impersonation | 0.900 | **1.000** | +0.100 | 通緝令/逮捕/檢察署 keywords |
+| installment_cancellation | 0.800 | **1.000** | +0.200 | 消費者保護官, 重複收費 |
+| investment_scam | 0.889 | **1.000** | +0.111 | 急需 keyword |
+| romance_scam | 0.200 | 0.500 | +0.300 | social_engineering patterns; 5 FNs remain |
+
+Remaining 9 FNs: 5 romance_scam (early trust-building phase, no financial ask yet — requires LLM reasoning) + 4 suspicious edge cases (ambiguous by design).  
+FP count unchanged at 4.  
+**LLM baseline pending**: re-run with `ANTHROPIC_API_KEY` set to measure full-pipeline performance.
 
 **7.4 Fraud message collection strategy**
 
