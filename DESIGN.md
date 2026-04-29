@@ -299,7 +299,7 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 ### Phase 5 progress tracker
 
 - [x] Expand eval dataset to ~100 labeled messages via scrapers + human review (110 messages: 80 fraud across 8 categories, 20 safe, 10 suspicious; scrape_165.py added)
-- [ ] Re-run eval harness to establish baseline precision/recall by category
+- [x] Re-run eval harness to establish baseline precision/recall by category (rule-based baseline: P=0.944 R=0.770 F1=0.848; romance_scam recall=0.200 identified as primary gap; LLM baseline pending API key in eval env)
 - [ ] Expand KB to 20–30 documents guided by category-level eval gaps
 - [ ] Run ablation study (message-only, URL-only, KB-only, BM25-only, semantic-only, full pipeline)
 - [ ] LLM comparison: Qwen2.5-72B and TAIDE-LX-7B-Chat vs Claude Sonnet 4.6
@@ -522,19 +522,19 @@ All 8 categories are seeded. Target for v2: 20–30 documents with more variant 
 
 **7.1 Test set structure**
 
-Labeled dataset stored in `eval/labeled_messages.csv`. Current seed set: 25 messages (15 fraud across 8 categories, 8 safe, 2 suspicious). Run via `eval/eval.py`; use `--skip-fetch` to skip live URL resolution.
+Labeled dataset stored in `eval/labeled_messages.csv`. Phase 5 dataset: 107 messages — 77 fraud (8 categories × ~10 each), 20 safe, 10 suspicious. Run via `eval/eval.py`; use `--skip-fetch` to skip live URL resolution.
 
-```
-message_text, label, scam_category, verdict, confidence, matched_patterns, summary, tp, fp, fn, tn
-"您的帳號異常，請立即點擊以下連結確認...", fraud, fake_bank_login, ...
-"7-11取貨通知，請於24小時內完成付款...", fraud, fake_delivery, ...
-```
+Flags added in Phase 5:
+- `--run-tag TAG` — label saved to `eval/run_history.csv` for run tracking
+- `--mode MODE` — ablation mode: `full`, `message_only`, `url_only`, `bm25_only`, `semantic_only`, `no_kb`
+- `--model MODEL` — LLM model ID override (reads `EVAL_MODEL_OVERRIDE` env var)
+- `--limit N` — run first N rows only (smoke test)
 
-Both URL and no-URL messages are included. **Phase 5 target: ~100 labeled messages** (~15 per fraud category, ~20 safe, ~10 suspicious edge cases) to make per-category precision/recall statistically meaningful.
+Run history (one row per run) stored in `eval/run_history.csv`.
 
 **7.1.1 Ablation study structure (Phase 5)**
 
-Eval harness will be extended to support component toggling for ablation runs. Results stored in `eval/ablation_results.csv`.
+Eval harness supports component toggling via `--mode`. Results stored in `eval/run_history.csv`.
 
 | Run | Components active | Purpose |
 |---|---|---|
@@ -560,7 +560,32 @@ Additional dimensions tracked:
 - URL-only signal vs message wording signal vs combined (ablation)
 - Confidence calibration (does confidence ≥ 0.9 actually correlate with high fraud rate?)
 
-**7.3 Fraud message collection strategy**
+**7.3 Baseline results (Phase 5 Step 2) — 2026-04-29**
+
+Run: `python eval/eval.py --skip-fetch --run-tag baseline-v1-rule-based`  
+Mode: rule-based fallback (no LLM — `ANTHROPIC_API_KEY` not set in eval environment)  
+n=107 messages, `--skip-fetch` (URL fetch and WHOIS disabled)
+
+| Category | n | Precision | Recall | F1 | Notes |
+|---|---|---|---|---|---|
+| **OVERALL** | 107 | 0.944 | 0.770 | 0.848 | |
+| fake_bank_login | 10 | 1.000 | 1.000 | 1.000 | Strong keyword coverage |
+| fake_delivery | 9 | 1.000 | 1.000 | 1.000 | Strong keyword coverage |
+| lottery_prize | 10 | 1.000 | 1.000 | 1.000 | Strong keyword coverage |
+| government_impersonation | 10 | 1.000 | 0.900 | 0.947 | 1 FN: subtle impersonation |
+| investment_scam | 9 | 1.000 | 0.889 | 0.941 | 1 FN: low-pressure opener |
+| installment_cancellation | 10 | 1.000 | 0.800 | 0.889 | 2 FN: no keyword triggers |
+| gift_card_scam | 9 | 1.000 | 0.667 | 0.800 | 3 FN: social-engineering framing |
+| romance_scam | 10 | 1.000 | 0.200 | 0.333 | 8 FN: no urgency/URL keywords |
+
+**Key findings:**
+- Precision is near-perfect (0.944) across all categories — heuristic rules fire conservatively.
+- Recall is the bottleneck (0.770 overall), driven mainly by romance_scam (0.200).
+- Romance scam misses because the messages use relationship-building language with no urgency/URL/gift-card keywords — heuristics are blind to this pattern. LLM + KB retrieval expected to close this gap.
+- 4 FP (safe messages flagged): messages contained ambiguous words that match fraud keyword lists.
+- **LLM baseline pending**: re-run with `ANTHROPIC_API_KEY` set to measure full-pipeline performance.
+
+**7.4 Fraud message collection strategy**
 
 | **Source** | **Expected yield** | **Label quality** |
 |---|---|---|

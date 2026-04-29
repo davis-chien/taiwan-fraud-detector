@@ -6,7 +6,7 @@ import anthropic
 
 from .output import FraudVerdict
 
-MODEL = "claude-sonnet-4-6"
+MODEL = os.getenv("EVAL_MODEL_OVERRIDE", "claude-sonnet-4-6")
 
 SYSTEM_PROMPT = (
     "你是台灣金融詐騙分析輔助系統。\n"
