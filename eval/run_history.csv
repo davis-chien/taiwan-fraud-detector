@@ -2,3 +2,7 @@ timestamp,run_tag,mode,model,skip_fetch,n_total,precision,recall,f1,tp,fp,fn,tn
 2026-04-29T18:42:42Z,smoke-test,full,default,True,5,1.0,1.0,1.0,5,0,0,0
 2026-04-29T18:42:55Z,baseline-v1-rule-based,full,default,True,107,0.944,0.77,0.848,67,4,20,16
 2026-04-29T19:21:40Z,baseline-v2-kb-expanded,full,default,True,107,0.951,0.897,0.923,78,4,9,16
+2026-04-29T19:53:54Z,baseline-v1-llm,full,default,True,107,0.951,0.897,0.923,78,4,9,16
+2026-04-29T20:03:17Z,baseline-v1-llm,full,default,True,107,0.951,0.897,0.923,78,4,9,16
+2026-04-29T20:09:57Z,baseline-v1-llm,full,default,True,107,0.951,0.897,0.923,78,4,9,16
+2026-05-11T18:36:42Z,baseline-v3-llm-full,full,default,True,107,0.978,1.0,0.989,87,2,0,18

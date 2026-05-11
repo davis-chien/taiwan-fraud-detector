@@ -301,6 +301,7 @@ The first phase is intentionally narrow and focused on safe core functionality. 
 - [x] Expand eval dataset to ~100 labeled messages via scrapers + human review (110 messages: 80 fraud across 8 categories, 20 safe, 10 suspicious; scrape_165.py added)
 - [x] Re-run eval harness to establish baseline precision/recall by category (rule-based baseline: P=0.944 R=0.770 F1=0.848; romance_scam recall=0.200 identified as primary gap; LLM baseline pending API key in eval env)
 - [x] Expand KB to 20–30 documents guided by category-level eval gaps (8→17 docs; signal_analyzer expanded; rule-based recall 0.770→0.897, F1 0.848→0.923)
+- [x] Run LLM full-pipeline baseline (P=0.978 R=1.000 F1=0.989; romance_scam recall 0.500→1.000; all 8 categories F1=1.000)
 - [ ] Run ablation study (message-only, URL-only, KB-only, BM25-only, semantic-only, full pipeline)
 - [ ] LLM comparison: Qwen2.5-72B and TAIDE-LX-7B-Chat vs Claude Sonnet 4.6
 - [ ] Embeddings comparison: bge-m3 and multilingual-e5-large vs voyage-multilingual-2
@@ -583,6 +584,22 @@ n=107 messages, `--skip-fetch` (URL fetch and WHOIS disabled)
 - Recall is the bottleneck (0.770 overall), driven mainly by romance_scam (0.200).
 - Romance scam misses because the messages use relationship-building language with no urgency/URL/gift-card keywords — heuristics are blind to this pattern. LLM + KB retrieval expected to close this gap.
 - 4 FP (safe messages flagged): messages contained ambiguous words that match fraud keyword lists.
+
+**After Phase 5 Step 4 — LLM full pipeline (2026-05-11):**
+
+Run: `python eval/eval.py --skip-fetch --run-tag baseline-v3-llm-full`
+Mode: full pipeline with LLM (`ANTHROPIC_API_KEY` set); `--skip-fetch`
+n=107 messages
+
+| Run | Precision | Recall | F1 | Notes |
+|---|---|---|---|---|
+| rule-based v1 | 0.944 | 0.770 | 0.848 | heuristics only |
+| rule-based v2 (KB expanded) | 0.951 | 0.897 | 0.923 | KB 8→17 docs |
+| **LLM full pipeline** | **0.978** | **1.000** | **0.989** | Claude Sonnet 4.6 |
+
+Per-category (LLM): all 8 categories at F1=1.000. Romance_scam recall: 0.200 (v1) → 0.500 (v2) → **1.000** (LLM).
+2 FP remain: safe messages returned `suspicious` at conf 0.55 and 0.72 — low-severity (not flagged as `fraud`).
+Note: 3 prior `baseline-v1-llm` runs (2026-04-29) silently fell back to rule-based scoring because `ANTHROPIC_API_KEY` was not set in the eval environment; those results match rule-based v2 exactly and are not genuine LLM baselines.
 
 **After Phase 5 Step 3 — KB expansion + signal_analyzer improvement (2026-04-29):**
 

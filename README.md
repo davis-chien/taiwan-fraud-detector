@@ -12,7 +12,7 @@ pinned: false
 
 > A RAG-based web application that analyzes full LINE messages to detect fraud targeting elderly users in Taiwan.
 
-**Status:** Phase 4 code complete — containerized, fetcher isolated, egress policy applied. HF Spaces deployment pending. Phase 5 planned: eval expansion, KB expansion, ablation study, LLM and embeddings model comparison, confidence calibration.  
+**Status:** Phase 5 in progress — LLM full-pipeline baseline P=0.978 R=1.000 F1=0.989 (all 8 fraud categories at F1=1.000). Next: ablation study, LLM/embeddings model comparison, confidence calibration. HF Spaces deployment pending.  
 **Demo:** Run locally with `python3 app.py` and open `http://127.0.0.1:7860`  
 **Design doc:** [DESIGN.md](./DESIGN.md)
 
